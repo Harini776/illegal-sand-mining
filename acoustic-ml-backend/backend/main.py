@@ -1,58 +1,317 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
 import tempfile
 import os
 import sys
+import requests
 from pathlib import Path
 
 
-# Find the acoustic-ml folder
+# ==========================================
+# PROJECT PATH
+# ==========================================
+
 PROJECT_DIR = Path(__file__).resolve().parent.parent
+
 ACOUSTIC_ML_DIR = PROJECT_DIR / "acoustic-ml"
 
-# Add acoustic-ml to Python path
+# Add acoustic-ml folder to Python path
 sys.path.insert(0, str(ACOUSTIC_ML_DIR))
 
-# Import our Acoustic ML prediction function
+
+# ==========================================
+# IMPORT ACOUSTIC ML
+# ==========================================
+
 from predict import predict_audio
 
 
-app = FastAPI()
+# ==========================================
+# IMPORT RISK ENGINE
+# ==========================================
 
+from backend.risk_engine import calculate_risk
+
+
+# ==========================================
+# FASTAPI APP
+# ==========================================
+
+app = FastAPI(
+    title="Illegal Sand Mining Detection API"
+)
+
+
+# ==========================================
+# SATELLITE ML API
+# ==========================================
+
+SATELLITE_API_URL = "http://127.0.0.1:8000/predict"
+
+
+# ==========================================
+# HOME API
+# ==========================================
 
 @app.get("/")
 def home():
+
     return {
-        "message": "SandWatch AI Backend is running"
+        "message": "Illegal Sand Mining Detection API is running"
     }
 
 
-@app.post("/api/analyze-audio")
-async def analyze_audio(file: UploadFile = File(...)):
+# ==========================================
+# CHECK SATELLITE API CONNECTION
+# ==========================================
 
-    # Create a temporary file
-    suffix = Path(file.filename).suffix
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-
-        # Read uploaded audio
-        audio_data = await file.read()
-
-        # Save audio temporarily
-        temp_file.write(audio_data)
-
-        temp_file_path = temp_file.name
+@app.get("/api/check-satellite")
+def check_satellite():
 
     try:
-        # Send audio to Acoustic ML
-        result = predict_audio(temp_file_path)
+
+        response = requests.get(
+            "http://127.0.0.1:8000/",
+            timeout=10
+        )
 
         return {
-            "filename": file.filename,
-            "prediction": result["prediction"],
-            "confidence": result["confidence"]
+            "message": "Satellite API connected successfully",
+            "satellite_response": response.json()
         }
 
+    except requests.exceptions.RequestException as e:
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not connect to Satellite API: {str(e)}"
+        )
+
+
+# ==========================================
+# COMBINED ANALYSIS
+# ==========================================
+
+@app.post("/api/analyze")
+async def analyze(
+
+    satellite_image: UploadFile = File(...),
+    audio_file: UploadFile = File(...)
+
+):
+
+    temp_file_path = None
+
+    try:
+
+        # ==================================
+        # 1. SATELLITE ANALYSIS
+        # ==================================
+
+        satellite_image_data = await satellite_image.read()
+
+        # IMPORTANT:
+        # "file" must match the parameter
+        # name used in satellite app.py
+        satellite_files = {
+
+            "file": (
+
+                satellite_image.filename,
+
+                satellite_image_data,
+
+                satellite_image.content_type
+
+            )
+
+        }
+
+
+        # Send one image to Satellite ML API
+        satellite_response = requests.post(
+
+            SATELLITE_API_URL,
+
+            files=satellite_files,
+
+            timeout=60
+
+        )
+
+
+        # Check response
+        if satellite_response.status_code != 200:
+
+            raise HTTPException(
+
+                status_code=500,
+
+                detail={
+
+                    "message": "Satellite ML prediction failed",
+
+                    "response": satellite_response.text
+
+                }
+
+            )
+
+
+        # Get satellite result
+        satellite_result = satellite_response.json()
+
+
+        # ==================================
+        # 2. GET SATELLITE SCORE
+        # ==================================
+
+        satellite_score = satellite_result.get(
+
+            "satelliteScore",
+
+            satellite_result.get(
+                "mining_probability",
+                0
+            )
+
+        )
+
+        satellite_score = float(satellite_score)
+
+
+        # ==================================
+        # 3. ACOUSTIC ANALYSIS
+        # ==================================
+
+        suffix = Path(audio_file.filename).suffix
+
+
+        # Create temporary audio file
+        with tempfile.NamedTemporaryFile(
+
+            delete=False,
+
+            suffix=suffix
+
+        ) as temp_file:
+
+            audio_data = await audio_file.read()
+
+            temp_file.write(audio_data)
+
+            temp_file_path = temp_file.name
+
+
+        # Run Acoustic ML model
+        acoustic_result = predict_audio(
+
+            temp_file_path
+
+        )
+
+
+        # ==================================
+        # 4. GET ACOUSTIC SCORE
+        # ==================================
+
+        acoustic_score = acoustic_result.get(
+
+            "confidence",
+
+            0
+
+        )
+
+        acoustic_score = float(acoustic_score)
+
+
+        # ==================================
+        # 5. HISTORICAL SCORE
+        # ==================================
+
+        # Currently default value.
+        # Later you can connect a database
+        # containing previous mining records.
+
+        historical_score = 0
+
+
+        # ==================================
+        # 6. CALCULATE FINAL RISK
+        # ==================================
+
+        risk_result = calculate_risk(
+
+            satellite_score,
+
+            acoustic_score,
+
+            historical_score
+
+        )
+
+
+        # ==================================
+        # 7. FINAL RESPONSE
+        # ==================================
+
+        return {
+
+            "satellite_result": satellite_result,
+
+            "satellite_score": satellite_score,
+
+            "acoustic_result": acoustic_result,
+
+            "acoustic_score": acoustic_score,
+
+            "historical_score": historical_score,
+
+            "final_risk_score": risk_result[
+                "final_risk_score"
+            ],
+
+            "risk_level": risk_result[
+                "risk_level"
+            ]
+
+        }
+
+
+    except requests.exceptions.RequestException as e:
+
+        raise HTTPException(
+
+            status_code=500,
+
+            detail=f"Satellite API connection error: {str(e)}"
+
+        )
+
+
+    except HTTPException:
+
+        raise
+
+
+    except Exception as e:
+
+        raise HTTPException(
+
+            status_code=500,
+
+            detail=str(e)
+
+        )
+
+
     finally:
+
         # Delete temporary audio file
-        if os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
+        if temp_file_path and os.path.exists(
+            temp_file_path
+        ):
+
+            os.remove(
+                temp_file_path
+            )
