@@ -1,0 +1,4 @@
+venv/
+acoustic-ml/dataset/
+__pycache__/
+*.pyc
