@@ -312,3 +312,4 @@ async def analyze(
             os.remove(
                 temp_file_path
             )
+            
