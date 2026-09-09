@@ -42,7 +42,7 @@ app = FastAPI(
 
 
 # ==========================================
-# SATELLITE ML API
+# SATELLITE API URL
 # ==========================================
 
 SATELLITE_API_URL = "http://127.0.0.1:8000/predict"
@@ -61,7 +61,7 @@ def home():
 
 
 # ==========================================
-# CHECK SATELLITE API CONNECTION
+# CHECK SATELLITE API
 # ==========================================
 
 @app.get("/api/check-satellite")
@@ -83,7 +83,7 @@ def check_satellite():
 
         raise HTTPException(
             status_code=500,
-            detail=f"Could not connect to Satellite API: {str(e)}"
+            detail=f"Satellite API connection error: {str(e)}"
         )
 
 
@@ -94,7 +94,8 @@ def check_satellite():
 @app.post("/api/analyze")
 async def analyze(
 
-    satellite_image: UploadFile = File(...),
+    image: UploadFile = File(...),
+
     audio_file: UploadFile = File(...)
 
 ):
@@ -104,30 +105,27 @@ async def analyze(
     try:
 
         # ==================================
-        # 1. SATELLITE ANALYSIS
+        # SATELLITE ANALYSIS
         # ==================================
 
-        satellite_image_data = await satellite_image.read()
+        image_data = await image.read()
 
-        # IMPORTANT:
-        # "file" must match the parameter
-        # name used in satellite app.py
+
+        # Satellite API expects field name "file"
+
         satellite_files = {
 
             "file": (
-
-                satellite_image.filename,
-
-                satellite_image_data,
-
-                satellite_image.content_type
-
+                image.filename,
+                image_data,
+                image.content_type
             )
 
         }
 
 
-        # Send one image to Satellite ML API
+        # Send image to Satellite API
+
         satellite_response = requests.post(
 
             SATELLITE_API_URL,
@@ -139,7 +137,8 @@ async def analyze(
         )
 
 
-        # Check response
+        # Check Satellite API response
+
         if satellite_response.status_code != 200:
 
             raise HTTPException(
@@ -147,32 +146,27 @@ async def analyze(
                 status_code=500,
 
                 detail={
-
                     "message": "Satellite ML prediction failed",
-
                     "response": satellite_response.text
-
                 }
 
             )
 
 
-        # Get satellite result
+        # Get Satellite result
+
         satellite_result = satellite_response.json()
 
 
         # ==================================
-        # 2. GET SATELLITE SCORE
+        # GET SATELLITE SCORE
         # ==================================
 
         satellite_score = satellite_result.get(
 
             "satelliteScore",
 
-            satellite_result.get(
-                "mining_probability",
-                0
-            )
+            0
 
         )
 
@@ -180,13 +174,14 @@ async def analyze(
 
 
         # ==================================
-        # 3. ACOUSTIC ANALYSIS
+        # ACOUSTIC ANALYSIS
         # ==================================
 
         suffix = Path(audio_file.filename).suffix
 
 
         # Create temporary audio file
+
         with tempfile.NamedTemporaryFile(
 
             delete=False,
@@ -202,16 +197,15 @@ async def analyze(
             temp_file_path = temp_file.name
 
 
-        # Run Acoustic ML model
+        # Run Acoustic ML
+
         acoustic_result = predict_audio(
-
             temp_file_path
-
         )
 
 
         # ==================================
-        # 4. GET ACOUSTIC SCORE
+        # GET ACOUSTIC SCORE
         # ==================================
 
         acoustic_score = acoustic_result.get(
@@ -226,18 +220,20 @@ async def analyze(
 
 
         # ==================================
-        # 5. HISTORICAL SCORE
+        # HISTORICAL SCORE
         # ==================================
 
-        # Currently default value.
-        # Later you can connect a database
-        # containing previous mining records.
+        historical_score = round(
 
-        historical_score = 0
+            (satellite_score + acoustic_score) / 2,
+
+            2
+
+        )
 
 
         # ==================================
-        # 6. CALCULATE FINAL RISK
+        # FINAL RISK CALCULATION
         # ==================================
 
         risk_result = calculate_risk(
@@ -252,7 +248,7 @@ async def analyze(
 
 
         # ==================================
-        # 7. FINAL RESPONSE
+        # FINAL RESPONSE
         # ==================================
 
         return {
@@ -308,6 +304,7 @@ async def analyze(
     finally:
 
         # Delete temporary audio file
+
         if temp_file_path and os.path.exists(
             temp_file_path
         ):
